@@ -63,7 +63,7 @@
           <execution>
             <configuration>
               <executable>python</executable>
-              <workingDirectory>${basedir}</workingDirectory>
+              <workingDirectory>thrift-ifaces-pointsengine-rules-main</workingDirectory>
               <skip>${skip.nodejs.postprocessing}</skip>
               <arguments>
                 <argument>${basedir}/dev-utils/emf/booleanValueCheckProcessor.py</argument>
@@ -79,7 +79,7 @@
           <execution>
             <configuration>
               <executable>python</executable>
-              <workingDirectory>${basedir}</workingDirectory>
+              <workingDirectory>thrift-ifaces-pointsengine-rules-main</workingDirectory>
               <skip>${skip.nodejs.postprocessing}</skip>
               <arguments>
                 <argument>${basedir}/dev-utils/emf/booleanValueCheckProcessor.py</argument>
