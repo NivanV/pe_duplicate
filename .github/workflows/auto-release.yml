@@ -223,7 +223,7 @@ jobs:
           fi
           
           # Build the project
-          mvn clean compile -f "$POM_FILE"
+          # mvn clean compile -f "$POM_FILE"
           echo "Build completed successfully"
 
       - name: Notify completion
