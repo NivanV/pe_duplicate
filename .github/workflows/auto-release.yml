@@ -1,4 +1,4 @@
-name: Complete Auto Release Process
+name: Auto Release Tag Cut (Parent POM)
 
 on:
   workflow_dispatch:
@@ -17,10 +17,10 @@ on:
       - 'v*'
 
 jobs:
-  complete-release:
+  auto-release:
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -33,6 +33,21 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
+
+      - name: Debug - List directory contents
+        run: |
+          echo "Current working directory: $(pwd)"
+          echo "Directory contents:"
+          ls -la
+          echo ""
+          echo "Parent directory contents:"
+          ls -la ../
+          echo ""
+          echo "Looking for pom.xml files:"
+          find . -name "pom.xml" -type f
+          echo ""
+          echo "Looking for pom.xml in parent:"
+          find .. -name "pom.xml" -type f | head -5
 
       - name: Extract version from tag or input
         id: version
@@ -48,22 +63,31 @@ jobs:
       - name: Get current version from pom.xml
         id: current_version
         run: |
-          CURRENT_VERSION=$(grep -o '<version>[^<]*</version>' pom.xml | head -1 | sed 's/<version>//;s/<\/version>//')
+          echo "Looking for pom.xml..."
+          
+          # First, try current directory
+          if [ -f "pom.xml" ]; then
+            echo "Found pom.xml in current directory"
+            POM_FILE="pom.xml"
+          # Then try parent directory
+          elif [ -f "../pom.xml" ]; then
+            echo "Found pom.xml in parent directory"
+            POM_FILE="../pom.xml"
+          # Then search recursively
+          else
+            echo "pom.xml not found in current or parent directory, searching recursively..."
+            POM_FILE=$(find . -name "pom.xml" -type f | head -1)
+            if [ -z "$POM_FILE" ]; then
+              echo "Error: No pom.xml file found in repository"
+              exit 1
+            fi
+            echo "Found pom.xml at: $POM_FILE"
+          fi
+          
+          CURRENT_VERSION=$(grep -o '<version>[^<]*</version>' "$POM_FILE" | head -1 | sed 's/<version>//;s/<\/version>//')
           echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-          echo "Current version: $CURRENT_VERSION"
-
-      - name: Calculate next version
-        id: next_version
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          # Extract major and minor version
-          MAJOR=$(echo $VERSION | cut -d. -f1)
-          MINOR=$(echo $VERSION | cut -d. -f2)
-          # Increment minor version
-          NEXT_MINOR=$((MINOR + 1))
-          NEXT_VERSION="$MAJOR.$NEXT_MINOR-SNAPSHOT"
-          echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
-          echo "Next development version: $NEXT_VERSION"
+          echo "current_pom_file=$POM_FILE" >> $GITHUB_OUTPUT
+          echo "Current version: $CURRENT_VERSION from $POM_FILE"
 
       - name: Validate version format
         run: |
@@ -83,7 +107,6 @@ jobs:
           fi
           echo "Version v$VERSION is available for release"
 
-      # ===== RELEASE PHASE =====
       - name: Create release branch
         run: |
           VERSION="${{ steps.version.outputs.version }}"
@@ -91,25 +114,33 @@ jobs:
           git checkout -b $BRANCH_NAME
           echo "Created release branch: $BRANCH_NAME"
 
-      - name: Update pom.xml for release
+      - name: Update pom.xml version
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           CURRENT_VERSION="${{ steps.current_version.outputs.current_version }}"
+          POM_FILE="${{ steps.current_version.outputs.current_pom_file }}"
           
-          # Update to the target release version
-          sed -i "s|<version>$CURRENT_VERSION</version>|<version>$VERSION</version>|g" pom.xml
+          echo "Updating $POM_FILE from $CURRENT_VERSION to $VERSION"
           
-          echo "Updated pom.xml from $CURRENT_VERSION to $VERSION (release version)"
+          # Update to the target version
+          sed -i "s|<version>$CURRENT_VERSION</version>|<version>$VERSION</version>|g" "$POM_FILE"
+          
+          echo "Updated $POM_FILE from $CURRENT_VERSION to $VERSION"
+          
+          # Verify the change
+          NEW_VERSION=$(grep -o '<version>[^<]*</version>' "$POM_FILE" | head -1 | sed 's/<version>//;s/<\/version>//')
+          echo "Verification - New version: $NEW_VERSION"
 
-      - name: Commit release changes
+      - name: Commit changes
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          POM_FILE="${{ steps.current_version.outputs.current_pom_file }}"
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add pom.xml
+          git add "$POM_FILE"
           git commit -m "Release v$VERSION
 
-          - Updated pom.xml version from ${{ steps.current_version.outputs.current_version }} to $VERSION
+          - Updated $POM_FILE version from ${{ steps.current_version.outputs.current_version }} to $VERSION
           - Prepared for release tag v$VERSION"
 
       - name: Create and push tag
@@ -128,7 +159,7 @@ jobs:
           git push origin $BRANCH_NAME
           echo "Pushed release branch: $BRANCH_NAME"
 
-      - name: Create PR to Production
+      - name: Create Pull Request
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.create_pr == 'true'
         uses: peter-evans/create-pull-request@v5
         with:
@@ -140,13 +171,12 @@ jobs:
             This PR prepares the repository for release v${{ steps.version.outputs.version }}.
             
             ### Changes:
-            - Updated `pom.xml` version from `${{ steps.current_version.outputs.current_version }}` to `${{ steps.version.outputs.version }}`
+            - Updated `${{ steps.current_version.outputs.current_pom_file }}` version from `${{ steps.current_version.outputs.current_version }}` to `${{ steps.version.outputs.version }}`
             
             ### Release Process:
-            1. Review and merge this PR to **production** branch
+            1. Review and merge this PR
             2. The tag `v${{ steps.version.outputs.version }}` will be created automatically
             3. Release artifacts will be generated
-            4. Backmerge process will be triggered
             
             ### Checklist:
             - [ ] Version number is correct
@@ -154,8 +184,8 @@ jobs:
             - [ ] Documentation is up to date
             - [ ] Ready for release
           head: "release/v${{ steps.version.outputs.version }}"
-          base: "production"
-          delete-branch: false
+          base: "main"
+          delete-branch: true
 
       - name: Create Release
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -180,103 +210,35 @@ jobs:
           draft: false
           prerelease: false
 
-      # ===== BACKMERGE PHASE =====
-      - name: Create backmerge branch
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.create_pr == 'false'
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          BACKMERGE_BRANCH="Backmerge-v$VERSION"
-          git checkout main
-          git checkout -b $BACKMERGE_BRANCH
-          echo "Created backmerge branch: $BACKMERGE_BRANCH"
-
-      - name: Update pom.xml for next development
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.create_pr == 'false'
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          NEXT_VERSION="${{ steps.next_version.outputs.next_version }}"
-          
-          # Update to the next development version
-          sed -i "s|<version>$VERSION</version>|<version>$NEXT_VERSION</version>|g" pom.xml
-          
-          echo "Updated pom.xml from $VERSION to $NEXT_VERSION (next development version)"
-
-      - name: Commit backmerge changes
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.create_pr == 'false'
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          NEXT_VERSION="${{ steps.next_version.outputs.next_version }}"
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add pom.xml
-          git commit -m "Backmerge v$VERSION
-
-          - Updated pom.xml version from $VERSION to $NEXT_VERSION
-          - Prepared for next development cycle"
-
-      - name: Push backmerge branch
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.create_pr == 'false'
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          BACKMERGE_BRANCH="Backmerge-v$VERSION"
-          git push origin $BACKMERGE_BRANCH
-          echo "Pushed backmerge branch: $BACKMERGE_BRANCH"
-
-      - name: Create Backmerge PR to Main
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.create_pr == 'false'
-        uses: peter-evans/create-pull-request@v5
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          title: "Backmerge v${{ steps.version.outputs.version }}"
-          body: |
-            ## Backmerge v${{ steps.version.outputs.version }}
-            
-            This PR backmerges the release v${{ steps.version.outputs.version }} to main and prepares for next development cycle.
-            
-            ### Changes:
-            - Updated `pom.xml` version from `${{ steps.version.outputs.version }}` to `${{ steps.next_version.outputs.next_version }}`
-            
-            ### Backmerge Process:
-            1. This merges the release changes back to main
-            2. Increments version for next development cycle
-            3. Prepares repository for next sprint/development
-            
-            ### Checklist:
-            - [ ] Version increment is correct
-            - [ ] All tests pass
-            - [ ] Ready for next development cycle
-          head: "Backmerge-v${{ steps.version.outputs.version }}"
-          base: "main"
-          delete-branch: true
-
       - name: Build and test
         run: |
+          POM_FILE="${{ steps.current_version.outputs.current_pom_file }}"
+          echo "Building with $POM_FILE"
+          
           # Set up Maven environment based on Java version
-          if grep -q "java.version>17" pom.xml || grep -q "maven.compiler.source>17" pom.xml; then
+          if grep -q "java.version>17" "$POM_FILE" || grep -q "maven.compiler.source>17" "$POM_FILE"; then
             echo "Using Maven 3.9 for Java 17"
-          elif grep -q "java.version>8" pom.xml || grep -q "maven.compiler.source>8" pom.xml; then
+          elif grep -q "java.version>8" "$POM_FILE" || grep -q "maven.compiler.source>8" "$POM_FILE"; then
             echo "Using Maven 3.5 for Java 8"
           fi
           
           # Build the project
-          mvn clean compile
+          mvn clean compile -f "$POM_FILE"
           echo "Build completed successfully"
 
       - name: Notify completion
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          NEXT_VERSION="${{ steps.next_version.outputs.next_version }}"
+          POM_FILE="${{ steps.current_version.outputs.current_pom_file }}"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.create_pr }}" = "true" ]; then
             echo "✅ Release preparation complete!"
-            echo "📋 Created PR to production for release v$VERSION"
-            echo "🔍 Please review and merge the PR to production to complete the release"
-            echo "🔄 After merging to production, run the workflow again with create_pr=false to complete backmerge"
+            echo "📋 Created PR for release v$VERSION"
+            echo "📄 Updated file: $POM_FILE"
+            echo "🔍 Please review and merge the PR to complete the release"
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.create_pr }}" = "false" ]; then
-            echo "✅ Complete release process finished!"
+            echo "✅ Release v$VERSION created successfully!"
             echo "🏷️ Tag v$VERSION has been pushed to the repository"
-            echo "🔄 Backmerge branch Backmerge-v$VERSION created"
-            echo "📋 Backmerge PR created to merge Backmerge-v$VERSION → main"
-            echo "🚀 Next development version: $NEXT_VERSION"
+            echo "📄 Updated file: $POM_FILE"
           else
             echo "✅ Release ${{ github.ref_name }} completed successfully!"
           fi
