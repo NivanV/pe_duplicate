@@ -3,7 +3,7 @@
 
   <groupId>com.capillary.commons</groupId>
   <artifactId>thrift-ifaces-pointsengine-rules</artifactId>
-  <version>1.73-SNAPSHOT</version>
+  <version>1.72</version>
   <packaging>jar</packaging>
 
   <name>Thrift Interfaces</name>
